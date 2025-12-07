@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "soundtouch": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "E:\\dev\\MCP\\soundTouch\\SoundTouchMCP"
+      ],
+      "env": {}
+    }
+  }
+}
