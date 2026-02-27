@@ -8,6 +8,8 @@ A Model Context Protocol (MCP) server for controlling Bose SoundTouch devices vi
 - **Volume Control**: Adjust volume up and down
 - **Preset Management**: List all configured presets and play them by name or number
 - **Bluetooth Pairing**: Enter Bluetooth pairing mode
+- **Device Information**: Get device details and list configured devices
+- **Network Discovery**: Scan subnet for SoundTouch devices and update `appsettings.json`
 
 ## Prerequisites
 
@@ -151,6 +153,17 @@ For other platforms:
 
 ## MCP Tools
 
+### DiscoverDevices
+Discover SoundTouch devices on a local network subnet and update `appsettings.json`.
+
+**Usage (short):**
+- Discover devices on auto-detected subnet: `DiscoverDevices(subnet: "", removeNotFound: false)`
+- Discover devices on a specific subnet: `DiscoverDevices(subnet: "192.168.1.0/24", removeNotFound: false)`
+
+**Parameters:**
+- `subnet` (string): Subnet in CIDR notation (for example `192.168.1.0/24`) or short form (for example `192.168.1`). If omitted, host subnet is auto-detected.
+- `removeNotFound` (boolean): If true, remove configured devices not found during discovery.
+
 ### PowerControl
 Turn a device on or off.
 
@@ -195,6 +208,15 @@ Enter Bluetooth pairing mode.
 
 **Parameters:**
 - `deviceName` (string): Name of the device
+
+### GetDeviceInfo
+Get information about a SoundTouch device.
+
+**Parameters:**
+- `deviceName` (string): Name of the device
+
+### ListDevices
+List all configured SoundTouch devices.
 
 ## API Reference
 
