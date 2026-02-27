@@ -24,6 +24,10 @@ builder.Services.Configure<SoundTouchConfiguration>(
 // Register HttpClient for SoundTouchClient
 builder.Services.AddHttpClient<SoundTouchClient>();
 
+// Register device discovery service
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<SoundTouchMCP.Services.DeviceDiscoveryService>();
+
 // Add MCP Server
 builder.Services
     .AddMcpServer()

@@ -62,6 +62,42 @@ Edit `appsettings.json` to configure your SoundTouch devices:
 
 ## Using with MCP Clients
 
+### GitHub Copilot (VS Code)
+
+Create `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "soundtouch": {
+      "command": "/absolute/path/to/SoundTouchMCP/publish/SoundTouchMCP",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Then in VS Code:
+
+1. Run `MCP: List Servers` from the Command Palette.
+2. Start the `soundtouch` server and approve trust when prompted.
+3. Open Copilot Chat and use prompts that invoke SoundTouch tools.
+
+If you prefer running directly via `dotnet` instead of a published binary:
+
+```json
+{
+  "servers": {
+    "soundtouch": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/absolute/path/to/SoundTouchMCP/SoundTouchMCP.csproj"],
+      "env": {}
+    }
+  }
+}
+```
+
 ### Claude Desktop Configuration
 
 Add this to your Claude Desktop configuration file:
@@ -97,14 +133,20 @@ Or use the published executable:
 
 ## Publishing
 
-To create a standalone executable:
+To publish for macOS (Apple Silicon):
 
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained
+dotnet publish ./SoundTouchMCP.csproj -c Release -r osx-arm64 --self-contained false -o ./publish
+```
+
+To publish for Windows (x64):
+
+```bash
+dotnet publish ./SoundTouchMCP.csproj -c Release -r win-x64 --self-contained false -o ./publish-win
 ```
 
 For other platforms:
-- macOS: `-r osx-x64`
+- macOS (Intel): `-r osx-x64`
 - Linux: `-r linux-x64`
 
 ## MCP Tools
