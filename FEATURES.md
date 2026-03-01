@@ -1,117 +1,58 @@
-# SoundTouch MCP Server - Features Summary
+# Features
 
-## Implemented Features ✅
+See [README.md](README.md) for setup, configuration, and MCP client integration.
 
-### 1. Power Control
-- **Turn On**: Powers on the device using the POWER key press/release
-- **Turn Off**: Puts the device into standby mode using the `/standby` endpoint
+## Implemented
 
-### 2. Volume Control
-- **Volume Up**: Increases volume by one level
-- **Volume Down**: Decreases volume by one level
-- **Set Volume**: Sets volume to a specific level (0-100)
-- **Get Volume**: Retrieves current volume level
+### Device Discovery
+- **Zeroconf** — discovers via `_soundtouch._tcp.local.`, uses advertised host/port
+- **Subnet scan** — probes port 8090 across a CIDR range (auto-detects host subnet if omitted)
+- **Config sync** — adds new devices, updates name/port for known ones, optionally removes stale entries (`forceRefresh`)
 
-### 3. Preset Management
-- **List Presets**: Shows all configured presets (1-6) with their names
-- **Play Preset by Number**: Select and play preset 1-6
-- **Play Preset by Name**: Search and play preset by name (supports partial matching)
+### Power Control
+- **On** — POWER key press/release via `/key`
+- **Off** — standby via `/standby`
 
-### 4. Bluetooth Pairing
-- **Enter Bluetooth Pairing Mode**: Puts device into pairing mode to connect with phones/tablets
+### Volume Control
+- **Up / Down** — adjusts by one step, reports new level
+- **Set** — sets to a specific level (0–100)
 
-### 5. Device Information
-- **Get Device Info**: Retrieves device type, ID, and IP address
-- **List Devices**: Shows all configured devices from appsettings.json
+### Preset Management
+- **List** — shows presets 1–6 with names
+- **Play** — by number (1–6) or by name (supports partial matching)
 
-## MCP Tools Available
+### Bluetooth
+- **Pairing mode** — puts device into BT pairing via `/enterBluetoothPairing`
 
-All tools are exposed through the Model Context Protocol:
+### Device Information
+- **Info** — returns device type, ID, IP, and port
+- **List** — shows all configured devices from the device store
 
-1. `PowerControl` - Control device power state
-2. `VolumeUp` - Increase volume
-3. `VolumeDown` - Decrease volume
-4. `SetVolume` - Set specific volume level
-5. `ListPresets` - List all presets
-6. `PlayPreset` - Play preset by name or number
-7. `EnterBluetoothPairing` - Enter Bluetooth pairing mode
-8. `GetDeviceInfo` - Get device information
-9. `ListDevices` - List all configured devices
+## SoundTouch API Endpoints Used
 
-## Configuration
-
-Devices are configured in `appsettings.json`:
-
-```json
-{
-  "SoundTouch": {
-    "Devices": [
-      {
-        "Name": "Living Room Speaker",
-        "IpAddress": "192.168.1.131"
-      },
-      {
-        "Name": "Bedroom Soundbar",
-        "IpAddress": "192.168.1.130"
-      }
-    ]
-  }
-}
-```
-
-## API Endpoints Used
-
-The server uses the following SoundTouch WebServices API endpoints:
-
-- `/key` - For power, volume, and preset key presses
-- `/standby` - For powering off devices
-- `/volume` - For getting/setting volume levels
-- `/presets` - For listing presets
-- `/enterBluetoothPairing` - For Bluetooth pairing mode
-- `/info` - For device information
-
-## Example Usage with Claude
-
-**User**: "Turn on my Living Room Speaker"
-**Claude**: *Uses PowerControl tool to power on the device*
-
-**User**: "List all presets on the Living Room Speaker"
-**Claude**: *Uses ListPresets tool to show all presets*
-
-**User**: "Play the K-LOVE preset"
-**Claude**: *Uses PlayPreset tool to play the preset by name*
-
-**User**: "Set volume to 50 on the Bedroom Soundbar"
-**Claude**: *Uses SetVolume tool with level 50*
-
-**User**: "Put the Living Room Speaker in Bluetooth pairing mode"
-**Claude**: *Uses EnterBluetoothPairing tool*
-
-## Technical Details
-
-- **Language**: C# / .NET 8.0
-- **MCP SDK**: ModelContextProtocol 0.5.0-preview.1
-- **Transport**: stdio (Standard Input/Output)
-- **Communication Protocol**: XML over HTTP
-- **Port**: 8090 (SoundTouch default)
+| Endpoint | Purpose |
+|----------|---------|
+| `/key` | Power, volume, and preset key presses |
+| `/standby` | Power off (standby) |
+| `/volume` | Get / set volume |
+| `/presets` | List presets |
+| `/enterBluetoothPairing` | Bluetooth pairing mode |
+| `/info` | Device information |
 
 ## Error Handling
 
-The server includes robust error handling for:
-- Invalid device names (with list of available devices)
-- Invalid preset numbers (must be 1-6)
-- Invalid volume levels (must be 0-100)
-- Network connectivity issues
+- Invalid device name → lists available devices
+- Invalid preset number (must be 1–6)
+- Invalid volume level (must be 0–100)
+- Network / HTTP failures
 - XML parsing errors
-- HTTP communication failures
 
-## Future Enhancement Ideas
+## Future Ideas
 
-Potential features that could be added:
 - Now Playing status
-- Play/Pause/Next/Previous track controls
-- Mute/Unmute
-- Zone management (multi-room)
-- Select source (Bluetooth, AUX, etc.)
-- Add/remove presets
-- Get recently played content
+- Play / Pause / Next / Previous
+- Mute / Unmute
+- Multi-room zone management
+- Source selection (Bluetooth, AUX, etc.)
+- Preset add / remove
+- Recently played content

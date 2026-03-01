@@ -39,3 +39,4 @@ publish/
 # Configuration files with sensitive data
 appsettings.Development.json
 appsettings.Local.json
+.DS_Store

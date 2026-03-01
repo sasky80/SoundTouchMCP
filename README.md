@@ -1,72 +1,89 @@
 # SoundTouch MCP Server
 
-A Model Context Protocol (MCP) server for controlling Bose SoundTouch devices via the SoundTouch WebServices API.
+An [MCP](https://modelcontextprotocol.io/) server for controlling Bose SoundTouch speakers via the [SoundTouch WebServices API](https://github.com/thlucas1/homeassistantcomponent_soundtouchplus/wiki/SoundTouch-WebServices-API).
 
 ## Features
 
-- **Power Control**: Turn SoundTouch devices on/off
-- **Volume Control**: Adjust volume up and down
-- **Preset Management**: List all configured presets and play them by name or number
-- **Bluetooth Pairing**: Enter Bluetooth pairing mode
-- **Device Information**: Get device details and list configured devices
-- **Network Discovery**: Scan subnet for SoundTouch devices and update `appsettings.json`
+- Power on / off (standby)
+- Volume up, down, and set to a specific level
+- List and play presets by name or number
+- Bluetooth pairing mode
+- Device info and listing
+- Network discovery — Zeroconf (`_soundtouch._tcp.local.`) and subnet scan
 
 ## Prerequisites
 
-- .NET 8.0 SDK
+- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 - One or more Bose SoundTouch devices on your network
-- Static IP addresses configured for your SoundTouch devices (recommended)
+
+## Quick Start
+
+```bash
+git clone <repository-url>
+cd SoundTouchMCP
+cp appsettings.example.json appsettings.json
+dotnet run
+```
+
+Devices are discovered automatically at runtime — use the `DiscoverDevices` or `DiscoverDevicesOnSubnet` tool from your MCP client.
 
 ## Configuration
 
-Edit `appsettings.json` to configure your SoundTouch devices:
+### `appsettings.json`
+
+Controls logging and discovery tuning. Copy `appsettings.example.json` to get started:
 
 ```json
 {
   "SoundTouch": {
-    "Devices": [
-      {
-        "Name": "Living Room Speaker",
-        "IpAddress": "192.168.1.131"
-      },
-      {
-        "Name": "Bedroom Soundbar",
-        "IpAddress": "192.168.1.130"
+    "Discovery": {
+      "ProbeTimeoutMs": 3000,
+      "Zeroconf": {
+        "ScanTimeMs": 5000,
+        "SocketRetries": 4,
+        "SocketRetryDelayMs": 1000,
+        "DiscoveryPasses": 2,
+        "PassDelayMs": 700
       }
-    ]
+    }
   }
 }
 ```
 
-## Installation
+| Setting | Purpose |
+|---------|---------|
+| `Discovery:ProbeTimeoutMs` | HTTP probe timeout for Zeroconf and subnet discovery |
+| `Discovery:Zeroconf:*` | Tune Zeroconf resilience on unstable networks |
 
-1. Clone this repository:
-   ```bash
-   git clone <repository-url>
-   cd SoundTouchMCP
-   ```
+### Device store
 
-2. Configure your devices in `appsettings.json`:
-   ```bash
-   cp appsettings.example.json appsettings.json
-   # Edit appsettings.json with your device information
-   ```
+Devices are persisted separately from `appsettings.json`:
 
-3. Build the project:
-   ```bash
-   dotnet build
-   ```
+| OS | Path |
+|----|------|
+| macOS | `~/Library/Application Support/SoundTouchMCP/devices.json` |
+| Windows | `%APPDATA%/SoundTouchMCP/devices.json` |
+| Linux | `$XDG_CONFIG_HOME/SoundTouchMCP/devices.json` |
 
-4. Run the server:
-   ```bash
-   dotnet run
-   ```
+Override with the `SOUNDTOUCH_DEVICES_PATH` environment variable.
 
-## Using with MCP Clients
+If the store doesn't exist yet, it bootstraps from `SoundTouch:Devices` in `appsettings.json` (one-time).
 
-### GitHub Copilot (VS Code)
+### Config file resolution
 
-Create `.vscode/mcp.json` in your workspace:
+The server finds `appsettings.json` using the first match:
+
+1. `--config /path/to/appsettings.json` (CLI argument)
+2. `SOUNDTOUCH_APPSETTINGS_PATH` environment variable
+3. `SOUNDTOUCH_CONFIG_DIR` environment variable → `<dir>/appsettings.json`
+4. Next to the server executable
+5. Server content root (fallback)
+
+## MCP Client Setup
+
+### VS Code (GitHub Copilot)
+
+Add to `.vscode/mcp.json`:
 
 ```json
 {
@@ -74,19 +91,15 @@ Create `.vscode/mcp.json` in your workspace:
     "soundtouch": {
       "command": "/absolute/path/to/SoundTouchMCP/publish/SoundTouchMCP",
       "args": [],
-      "env": {}
+      "env": {
+        "SOUNDTOUCH_CONFIG_DIR": "/absolute/path/to/your/config/folder"
+      }
     }
   }
 }
 ```
 
-Then in VS Code:
-
-1. Run `MCP: List Servers` from the Command Palette.
-2. Start the `soundtouch` server and approve trust when prompted.
-3. Open Copilot Chat and use prompts that invoke SoundTouch tools.
-
-If you prefer running directly via `dotnet` instead of a published binary:
+Or run via `dotnet` directly:
 
 ```json
 {
@@ -94,39 +107,26 @@ If you prefer running directly via `dotnet` instead of a published binary:
     "soundtouch": {
       "command": "dotnet",
       "args": ["run", "--project", "/absolute/path/to/SoundTouchMCP/SoundTouchMCP.csproj"],
-      "env": {}
+      "env": {
+        "SOUNDTOUCH_CONFIG_DIR": "/absolute/path/to/your/config/folder"
+      }
     }
   }
 }
 ```
 
-### Claude Desktop Configuration
+Then: **Command Palette → MCP: List Servers → start `soundtouch`**.
 
-Add this to your Claude Desktop configuration file:
+### Claude Desktop
 
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
   "mcpServers": {
     "soundtouch": {
       "command": "dotnet",
-      "args": ["run", "--project", "path/to/SoundTouchMCP"],
-      "env": {}
-    }
-  }
-}
-```
-
-Or use the published executable:
-
-```json
-{
-  "mcpServers": {
-    "soundtouch": {
-      "command": "path/to/SoundTouchMCP.exe",
-      "args": [],
+      "args": ["run", "--project", "/path/to/SoundTouchMCP"],
       "env": {}
     }
   }
@@ -135,97 +135,40 @@ Or use the published executable:
 
 ## Publishing
 
-To publish for macOS (Apple Silicon):
-
 ```bash
+# macOS (Apple Silicon)
 dotnet publish ./SoundTouchMCP.csproj -c Release -r osx-arm64 --self-contained false -o ./publish
-```
 
-To publish for Windows (x64):
-
-```bash
+# Windows (x64)
 dotnet publish ./SoundTouchMCP.csproj -c Release -r win-x64 --self-contained false -o ./publish-win
 ```
 
-For other platforms:
-- macOS (Intel): `-r osx-x64`
-- Linux: `-r linux-x64`
+Other runtimes: `osx-x64`, `linux-x64`.
 
 ## MCP Tools
 
-### DiscoverDevices
-Discover SoundTouch devices on a local network subnet and update `appsettings.json`.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `DiscoverDevices` | Discover devices via Zeroconf and update the store | `removeNotFound`, `forceRefresh` |
+| `DiscoverDevicesOnSubnet` | Discover devices by scanning a subnet on port 8090 | `subnet` (CIDR, e.g. `192.168.1.0/24`; auto-detected if omitted), `removeNotFound`, `forceRefresh` |
+| `PowerControl` | Turn a device on or off | `deviceName`, `powerOn` |
+| `VolumeUp` | Increase volume by one step | `deviceName` |
+| `VolumeDown` | Decrease volume by one step | `deviceName` |
+| `SetVolume` | Set volume to a specific level (0–100) | `deviceName`, `level` |
+| `ListPresets` | List all presets (1–6) for a device | `deviceName` |
+| `PlayPreset` | Play a preset by name or number | `deviceName`, `presetIdentifier` |
+| `EnterBluetoothPairing` | Enter Bluetooth pairing mode | `deviceName` |
+| `GetDeviceInfo` | Get device type, ID, and IP | `deviceName` |
+| `ListDevices` | List all configured devices | — |
 
-**Usage (short):**
-- Discover devices on auto-detected subnet: `DiscoverDevices(subnet: "", removeNotFound: false)`
-- Discover devices on a specific subnet: `DiscoverDevices(subnet: "192.168.1.0/24", removeNotFound: false)`
-
-**Parameters:**
-- `subnet` (string): Subnet in CIDR notation (for example `192.168.1.0/24`) or short form (for example `192.168.1`). If omitted, host subnet is auto-detected.
-- `removeNotFound` (boolean): If true, remove configured devices not found during discovery.
-
-### PowerControl
-Turn a device on or off.
-
-**Parameters:**
-- `deviceName` (string): Name of the device as configured in appsettings.json
-- `powerOn` (boolean): true to turn on, false to turn off (standby)
-
-### VolumeUp
-Increase the volume of a device.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-
-### VolumeDown
-Decrease the volume of a device.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-
-### SetVolume
-Set the volume to a specific level.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-- `level` (number): Volume level (0-100)
-
-### ListPresets
-List all configured presets for a device.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-
-### PlayPreset
-Play a preset by name or number.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-- `presetIdentifier` (string): Preset name or number (1-6)
-
-### EnterBluetoothPairing
-Enter Bluetooth pairing mode.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-
-### GetDeviceInfo
-Get information about a SoundTouch device.
-
-**Parameters:**
-- `deviceName` (string): Name of the device
-
-### ListDevices
-List all configured SoundTouch devices.
-
-## API Reference
-
-This server uses the [SoundTouch WebServices API](https://github.com/thlucas1/homeassistantcomponent_soundtouchplus/wiki/SoundTouch-WebServices-API).
+> **Tip:** Use `DiscoverDevices(forceRefresh: true)` to fully reconcile the store with currently reachable devices (removes stale entries).
+>
+> Subnet scan safety: prefix length must be between `/16` and `/30`.
 
 ## License
 
-MIT License
+MIT
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions welcome — feel free to open a Pull Request.

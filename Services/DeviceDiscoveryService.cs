@@ -1,20 +1,115 @@
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Xml.Linq;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using SoundTouchMCP.Models;
+using Zeroconf;
 
 namespace SoundTouchMCP.Services;
 
-public class DeviceDiscoveryService
+public class DeviceDiscoveryService : IDeviceDiscoveryService
 {
     private readonly IHttpClientFactory _httpClientFactory;
-    private const int SoundTouchPort = 8090;
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromMilliseconds(500);
+    private readonly ILogger<DeviceDiscoveryService> _logger;
+    private readonly ZeroconfDiscoveryConfiguration _zeroconf;
+    private readonly TimeSpan _probeTimeout;
+    private const int SoundTouchPort = DeviceConfiguration.DefaultPort;
+    private const string SoundTouchService = "_soundtouch._tcp.local.";
+    private const int MaxConcurrentSubnetProbes = 32;
 
-    public DeviceDiscoveryService(IHttpClientFactory httpClientFactory)
+    public DeviceDiscoveryService(
+        IHttpClientFactory httpClientFactory,
+        ILogger<DeviceDiscoveryService> logger,
+        IOptions<SoundTouchConfiguration> config)
     {
         _httpClientFactory = httpClientFactory;
+        _logger = logger;
+        _zeroconf = config.Value.Discovery.Zeroconf;
+        _probeTimeout = TimeSpan.FromMilliseconds(config.Value.Discovery.ProbeTimeoutMs);
+    }
+
+    /// <summary>
+    /// Discovers SoundTouch devices using Zeroconf (_soundtouch._tcp.local.) and probes discovered host/port.
+    /// </summary>
+    public async Task<List<DeviceConfiguration>> DiscoverViaZeroconfAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var hosts = await ResolveZeroconfHostsAsync(cancellationToken);
+        if (hosts.Count == 0)
+            return [];
+
+        var candidates = hosts
+            .SelectMany(host =>
+            {
+                var service = host.Services
+                    .FirstOrDefault(kvp =>
+                        string.Equals(kvp.Key, SoundTouchService, StringComparison.OrdinalIgnoreCase))
+                    .Value
+                    ?? host.Services.Values.FirstOrDefault();
+
+                if (service == null || string.IsNullOrWhiteSpace(host.IPAddress))
+                    return [];
+
+                return new[]
+                {
+                    new
+                    {
+                        IpAddress = host.IPAddress,
+                        Port = service.Port,
+                        NameHint = string.IsNullOrWhiteSpace(host.DisplayName) ? host.Id : host.DisplayName
+                    }
+                };
+            })
+            .GroupBy(x => x.IpAddress, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        var tasks = candidates.Select(c =>
+            ProbeHostAsync(c.IpAddress, c.Port, c.NameHint, cancellationToken));
+        var results = await Task.WhenAll(tasks);
+
+        return results.Where(d => d != null).Cast<DeviceConfiguration>().ToList();
+    }
+
+    private async Task<IReadOnlyList<IZeroconfHost>> ResolveZeroconfHostsAsync(
+        CancellationToken cancellationToken)
+    {
+        var scanTime = TimeSpan.FromMilliseconds(Math.Max(500, _zeroconf.ScanTimeMs));
+        var socketRetries = Math.Max(1, _zeroconf.SocketRetries);
+        var socketRetryDelayMs = Math.Max(100, _zeroconf.SocketRetryDelayMs);
+        var discoveryPasses = Math.Max(1, _zeroconf.DiscoveryPasses);
+        var passDelay = TimeSpan.FromMilliseconds(Math.Max(0, _zeroconf.PassDelayMs));
+
+        for (int attempt = 1; attempt <= discoveryPasses; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var hosts = await ZeroconfResolver.ResolveAsync(
+                    SoundTouchService,
+                    scanTime: scanTime,
+                    retries: socketRetries,
+                    retryDelayMilliseconds: socketRetryDelayMs,
+                    cancellationToken: cancellationToken);
+
+                if (hosts.Count > 0)
+                    return hosts;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Zeroconf discovery attempt {Attempt}/{TotalAttempts} failed.", attempt, discoveryPasses);
+            }
+
+            if (attempt < discoveryPasses && passDelay > TimeSpan.Zero)
+                await Task.Delay(passDelay, cancellationToken);
+        }
+
+        return [];
     }
 
     /// <summary>
@@ -25,41 +120,65 @@ public class DeviceDiscoveryService
         string? subnet,
         CancellationToken cancellationToken = default)
     {
-        var (baseAddress, prefixLength) = ParseSubnet(subnet);
-        var ips = EnumerateHosts(baseAddress, prefixLength);
+        var (baseAddress, prefixLength) = SubnetUtilities.ParseSubnet(subnet);
+        var ips = SubnetUtilities.EnumerateHosts(baseAddress, prefixLength);
+        var discovered = new List<DeviceConfiguration>();
+        var discoveredLock = new object();
 
-        var tasks = ips.Select(ip => ProbeHostAsync(ip, cancellationToken));
-        var results = await Task.WhenAll(tasks);
+        await Parallel.ForEachAsync(
+            ips,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = MaxConcurrentSubnetProbes
+            },
+            async (ip, ct) =>
+            {
+                var result = await ProbeHostAsync(ip, SoundTouchPort, null, ct);
+                if (result is null)
+                    return;
 
-        return results.Where(d => d != null).Cast<DeviceConfiguration>().ToList();
+                lock (discoveredLock)
+                {
+                    discovered.Add(result);
+                }
+            });
+
+        return discovered;
     }
 
     /// <summary>
     /// Returns the auto-detected subnet string (e.g. "192.168.1.0/24") from the host's primary interface.
     /// </summary>
-    public static string GetHostSubnet()
+    public string GetHostSubnet()
     {
-        var (baseAddress, prefixLength) = DetectHostSubnet();
+        var (baseAddress, prefixLength) = SubnetUtilities.DetectHostSubnet();
         return $"{baseAddress}/{prefixLength}";
     }
 
-    private async Task<DeviceConfiguration?> ProbeHostAsync(string ip, CancellationToken cancellationToken)
+    private async Task<DeviceConfiguration?> ProbeHostAsync(
+        string ip,
+        int port,
+        string? nameHint,
+        CancellationToken cancellationToken)
     {
         try
         {
+            if (!IsAllowedProbeTarget(ip, port))
+                return null;
+
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(ProbeTimeout);
+            cts.CancelAfter(_probeTimeout);
 
-            using var client = _httpClientFactory.CreateClient();
-            client.Timeout = ProbeTimeout;
+            using var client = _httpClientFactory.CreateClient("SoundTouchDiscoveryClient");
 
-            var url = $"http://{ip}:{SoundTouchPort}/info";
+            var url = $"http://{ip}:{port}/info";
             var response = await client.GetAsync(url, cts.Token);
             if (!response.IsSuccessStatusCode)
                 return null;
 
             var xml = await response.Content.ReadAsStringAsync(cts.Token);
-            var doc = XDocument.Parse(xml);
+            var doc = SecureXmlParser.Parse(xml);
 
             // Verify it looks like a SoundTouch /info response
             if (doc.Root?.Name.LocalName != "info")
@@ -67,121 +186,38 @@ public class DeviceDiscoveryService
 
             var name = doc.Root.Element("name")?.Value;
             if (string.IsNullOrWhiteSpace(name))
+                name = nameHint;
+
+            if (string.IsNullOrWhiteSpace(name))
                 return null;
 
-            return new DeviceConfiguration { Name = name, IpAddress = ip };
+            return new DeviceConfiguration { Name = name, IpAddress = ip, Port = port };
         }
-        catch
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Probe failed for host {Ip}:{Port}.", ip, port);
             return null;
         }
     }
 
-    private static (string baseAddress, int prefixLength) ParseSubnet(string? subnet)
+
+    private static bool IsAllowedProbeTarget(string ip, int port)
     {
-        if (string.IsNullOrWhiteSpace(subnet))
-            return DetectHostSubnet();
+        if (port < 1 || port > 65535)
+            return false;
 
-        subnet = subnet.Trim();
+        if (!IPAddress.TryParse(ip, out var address))
+            return false;
 
-        // Accept short form like "192.168.1" → "192.168.1.0/24"
-        if (!subnet.Contains('/'))
-        {
-            var parts = subnet.Split('.');
-            if (parts.Length == 3)
-                subnet = $"{subnet}.0/24";
-            else if (parts.Length == 4)
-                subnet = $"{subnet}/24";
-            else
-                throw new ArgumentException($"Cannot parse subnet '{subnet}'. Expected CIDR (e.g. 192.168.1.0/24).");
-        }
-
-        var slashIdx = subnet.IndexOf('/');
-        var ipPart = subnet[..slashIdx];
-        var prefixPart = subnet[(slashIdx + 1)..];
-
-        if (!IPAddress.TryParse(ipPart, out var address) || address.AddressFamily != AddressFamily.InterNetwork)
-            throw new ArgumentException($"Invalid IP in subnet: '{ipPart}'");
-
-        if (!int.TryParse(prefixPart, out var prefix) || prefix < 1 || prefix > 30)
-            throw new ArgumentException($"Invalid prefix length: '{prefixPart}'. Must be 1-30.");
-
-        return (GetNetworkAddress(address, prefix), prefix);
+        return NetworkAddressGuard.IsAllowedPrivateOrLinkLocalIPv4(address);
     }
 
-    private static (string baseAddress, int prefixLength) DetectHostSubnet()
-    {
-        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (ni.OperationalStatus != OperationalStatus.Up ||
-                ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-                continue;
-
-            foreach (var addr in ni.GetIPProperties().UnicastAddresses)
-            {
-                if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
-                    continue;
-
-                var ip = addr.Address;
-                var mask = addr.IPv4Mask;
-                if (mask == null || mask.Equals(IPAddress.Any))
-                    continue;
-
-                var prefix = CountBits(mask.GetAddressBytes());
-                var network = GetNetworkAddress(ip, prefix);
-                return (network, prefix);
-            }
-        }
-
-        throw new InvalidOperationException(
-            "Could not detect host subnet. Please provide a subnet explicitly (e.g. 192.168.1.0/24).");
-    }
-
-    private static string GetNetworkAddress(IPAddress address, int prefixLength)
-    {
-        var ipBytes = address.GetAddressBytes();
-        var mask = PrefixToMask(prefixLength);
-        var networkBytes = new byte[4];
-        for (int i = 0; i < 4; i++)
-            networkBytes[i] = (byte)(ipBytes[i] & mask[i]);
-        return new IPAddress(networkBytes).ToString();
-    }
-
-    private static IEnumerable<string> EnumerateHosts(string networkAddress, int prefixLength)
-    {
-        var netBytes = IPAddress.Parse(networkAddress).GetAddressBytes();
-        var mask = PrefixToMask(prefixLength);
-
-        uint network = ToUInt32(netBytes);
-        uint broadcast = network | ~ToUInt32(mask);
-
-        // Exclude network address and broadcast address
-        for (uint ip = network + 1; ip < broadcast; ip++)
-        {
-            yield return new IPAddress(ToBigEndianBytes(ip)).ToString();
-        }
-    }
-
-    private static byte[] PrefixToMask(int prefixLength)
-    {
-        uint mask = prefixLength == 0 ? 0 : (uint)(0xFFFFFFFF << (32 - prefixLength));
-        return ToBigEndianBytes(mask);
-    }
-
-    private static uint ToUInt32(byte[] bytes) =>
-        (uint)((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]);
-
-    private static byte[] ToBigEndianBytes(uint value) =>
-        [(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value];
-
-    private static int CountBits(byte[] bytes)
-    {
-        int count = 0;
-        foreach (var b in bytes)
-        {
-            var x = b;
-            while (x != 0) { count += x & 1; x >>= 1; }
-        }
-        return count;
-    }
 }
